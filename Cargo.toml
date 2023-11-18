@@ -12,6 +12,7 @@ anyhow = "1"
 argh = "0.1"
 atty = "0.2"
 bs58 = "*"
+base64 = "0.13"
 borsh = "0.10"
 bigdecimal = { version = "0.3", features = ["serde"] }
 config = { version = "0.13.1", default-features = false, features = ["yaml"] }

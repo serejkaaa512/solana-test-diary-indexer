@@ -5,12 +5,14 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use borsh::BorshDeserialize;
 use diary::instruction::{AddRecord, CreateDiary, RemoveRecord};
+use diary::{DiaryEvent, RecordEvent};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
 use solana_client::rpc_config::RpcTransactionConfig;
 use solana_program::program_pack::Pack;
 use solana_sdk::account::ReadableAccount;
 use solana_sdk::signature::Signature;
+use solana_transaction_status::option_serializer::OptionSerializer;
 use solana_transaction_status::{EncodedTransaction, UiTransactionEncoding};
 
 use crate::models::{Diary, Record};
@@ -93,6 +95,14 @@ impl DiaryIndexer {
                 .get_transaction_with_config(&signature, config)
                 .await?;
 
+            let log = transaction.transaction.meta.and_then(|t| {
+                if let OptionSerializer::Some(log_messages) = t.log_messages {
+                    Some(log_messages)
+                } else {
+                    None
+                }
+            });
+
             let raw_transaction =
                 if let EncodedTransaction::Binary(ref r, _) = transaction.transaction.transaction {
                     r.as_bytes().to_vec()
@@ -117,6 +127,16 @@ impl DiaryIndexer {
                     let user_pubkey = account_keys[accounts[0] as usize];
                     let diary_pubkey = account_keys[accounts[1] as usize];
 
+                    let name = log
+                        .as_ref()
+                        .and_then(|logs| logs.first())
+                        .and_then(|log| {
+                            DiaryEvent::try_from_slice(&base64::decode(log).unwrap_or_default())
+                                .ok()
+                        })
+                        .map(|DiaryEvent { name, .. }| name)
+                        .unwrap_or(name);
+
                     let diary = Diary {
                         account: diary_pubkey.to_string(),
                         user_address: user_pubkey.to_string(),
@@ -139,20 +159,33 @@ impl DiaryIndexer {
                     let diary_pubkey = account_keys[accounts[1] as usize];
                     let record_pubkey = account_keys[accounts[2] as usize];
 
-                    let record_account = self
-                        .rpc_client
-                        .get_account_with_commitment(&record_pubkey, Default::default())
-                        .await?
-                        .value
-                        .ok_or(DiaryIndexerError::AccountNotFound(
-                            record_pubkey.to_string(),
-                        ))?;
-                    let record_account_data = diary::Record::unpack(record_account.data())?;
+                    let text = if let Some(text_from_event) = log
+                        .as_ref()
+                        .and_then(|logs| logs.first())
+                        .and_then(|log| {
+                            RecordEvent::try_from_slice(&base64::decode(log).unwrap_or_default())
+                                .ok()
+                        })
+                        .map(|RecordEvent { text }| text)
+                    {
+                        text_from_event
+                    } else {
+                        let record_account = self
+                            .rpc_client
+                            .get_account_with_commitment(&record_pubkey, Default::default())
+                            .await?
+                            .value
+                            .ok_or(DiaryIndexerError::AccountNotFound(
+                                record_pubkey.to_string(),
+                            ))?;
+                        let record_account_data = diary::Record::unpack(record_account.data())?;
+                        record_account_data.text
+                    };
 
                     let record = Record {
                         account: record_pubkey.to_string(),
                         diary: diary_pubkey.to_string(),
-                        text: record_account_data.text,
+                        text,
                         signature,
                         raw_transaction: raw_transaction.clone(),
                     };
