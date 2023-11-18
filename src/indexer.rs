@@ -129,10 +129,34 @@ impl DiaryIndexer {
 
                     let name = log
                         .as_ref()
-                        .and_then(|logs| logs.first())
-                        .and_then(|log| {
-                            DiaryEvent::try_from_slice(&base64::decode(log).unwrap_or_default())
-                                .ok()
+                        .and_then(|logs| {
+                            logs.windows(3).find_map(|three_logs| {
+                                let mut iter = three_logs.iter();
+                                // Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x invoke [1]
+                                if let Some(first_str) = iter.next() {
+                                    if first_str.starts_with(&format!(
+                                        "Program {} invoke",
+                                        self.config.program_address
+                                    )) {
+                                        // Program log: Instruction: ...
+                                        iter.next();
+                                        // Program data: k8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==
+                                        if let Some(third_str) = iter.next() {
+                                            if third_str.starts_with("Program data: ") {
+                                                if let Some(data) =
+                                                    third_str.split_whitespace().rev().next()
+                                                {
+                                                    return DiaryEvent::try_from_slice(
+                                                        &base64::decode(data).unwrap_or_default(),
+                                                    )
+                                                    .ok();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                None
+                            })
                         })
                         .map(|DiaryEvent { name, .. }| name)
                         .unwrap_or(name);
@@ -161,10 +185,34 @@ impl DiaryIndexer {
 
                     let text = if let Some(text_from_event) = log
                         .as_ref()
-                        .and_then(|logs| logs.first())
-                        .and_then(|log| {
-                            RecordEvent::try_from_slice(&base64::decode(log).unwrap_or_default())
-                                .ok()
+                        .and_then(|logs| {
+                            logs.windows(3).find_map(|three_logs| {
+                                let mut iter = three_logs.iter();
+                                // Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x invoke [1]
+                                if let Some(first_str) = iter.next() {
+                                    if first_str.starts_with(&format!(
+                                        "Program {} invoke",
+                                        self.config.program_address
+                                    )) {
+                                        // Program log: Instruction: ...
+                                        iter.next();
+                                        // Program data: k8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==
+                                        if let Some(third_str) = iter.next() {
+                                            if third_str.starts_with("Program data: ") {
+                                                if let Some(data) =
+                                                    third_str.split_whitespace().rev().next()
+                                                {
+                                                    return RecordEvent::try_from_slice(
+                                                        &base64::decode(data).unwrap_or_default(),
+                                                    )
+                                                    .ok();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                None
+                            })
                         })
                         .map(|RecordEvent { text }| text)
                     {
