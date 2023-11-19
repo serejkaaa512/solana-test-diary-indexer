@@ -125,11 +125,19 @@ impl DiaryIndexer {
                 .decode()
                 .ok_or_else(|| DiaryIndexerError::DecodeTransactionError(signature.to_string()))?;
 
+            let mut account_keys = encoded_transaction.message.static_account_keys().to_vec();
+            if let Some(address_account_table) = encoded_transaction.message.address_table_lookups()
+            {
+                account_keys = address_account_table
+                    .iter()
+                    .map(|a| a.account_key.clone())
+                    .collect::<Vec<_>>();
+            }
+
             for c_ix in encoded_transaction.message.instructions() {
                 if let Ok(CreateDiary { name, .. }) = CreateDiary::try_from_slice(&c_ix.data) {
                     let accounts = c_ix.accounts.clone();
                     let signature = transaction_status.signature.as_bytes().to_vec();
-                    let account_keys = encoded_transaction.message.static_account_keys();
 
                     let user_pubkey = account_keys[accounts[0] as usize];
                     let diary_pubkey = account_keys[accounts[1] as usize];
@@ -160,7 +168,6 @@ impl DiaryIndexer {
                 } else if let Ok(AddRecord { .. }) = AddRecord::try_from_slice(&c_ix.data) {
                     let accounts = c_ix.accounts.clone();
                     let signature = transaction_status.signature.as_bytes().to_vec();
-                    let account_keys = encoded_transaction.message.static_account_keys();
 
                     let diary_pubkey = account_keys[accounts[1] as usize];
                     let record_pubkey = account_keys[accounts[2] as usize];
@@ -204,7 +211,6 @@ impl DiaryIndexer {
                         })?;
                 } else if let Ok(RemoveRecord { .. }) = RemoveRecord::try_from_slice(&c_ix.data) {
                     let accounts = c_ix.accounts.clone();
-                    let account_keys = encoded_transaction.message.static_account_keys();
                     let record_pubkey = account_keys[accounts[2] as usize];
 
                     self.sqlx_client
@@ -316,6 +322,12 @@ mod tests {
             "Program data: A8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==".to_string(),
             "Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x consumed 8120 of 200000 compute units".to_string(),
             "Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x success".to_string(),
+            "Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x invoke [1]".to_string(),
+            "Program log: Instruction: AddRecord".to_string(),
+            "Program log: Program".to_string(),
+            "Program data: k8iH+OXeD5YSAAAAZGFzZGFzZGFzZGFzMTIzMTIzBgAAAGZkc2Zkcw==".to_string(),
+            "Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x consumed 8671 of 200000 compute units".to_string(),
+            "Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x success".to_string(),
             ];
         let events = get_events_from_log(
             &mut log.into_iter(),
@@ -325,7 +337,8 @@ mod tests {
             events,
             vec![
                 "k8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==".to_string(),
-                "A8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==".to_string()
+                "A8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==".to_string(),
+                "k8iH+OXeD5YSAAAAZGFzZGFzZGFzZGFzMTIzMTIzBgAAAGZkc2Zkcw==".to_string()
             ]
         );
     }
