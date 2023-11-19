@@ -95,13 +95,20 @@ impl DiaryIndexer {
                 .get_transaction_with_config(&signature, config)
                 .await?;
 
-            let log = transaction.transaction.meta.and_then(|t| {
-                if let OptionSerializer::Some(log_messages) = t.log_messages {
-                    Some(log_messages)
-                } else {
-                    None
-                }
-            });
+            let events = transaction
+                .transaction
+                .meta
+                .and_then(|t| {
+                    if let OptionSerializer::Some(log_messages) = t.log_messages {
+                        Some(get_events_from_log(
+                            &mut log_messages.into_iter(),
+                            &self.config.program_address.to_string(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
 
             let raw_transaction =
                 if let EncodedTransaction::Binary(ref r, _) = transaction.transaction.transaction {
@@ -127,36 +134,11 @@ impl DiaryIndexer {
                     let user_pubkey = account_keys[accounts[0] as usize];
                     let diary_pubkey = account_keys[accounts[1] as usize];
 
-                    let name = log
-                        .as_ref()
-                        .and_then(|logs| {
-                            logs.windows(3).find_map(|three_logs| {
-                                let mut iter = three_logs.iter();
-                                // Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x invoke [1]
-                                if let Some(first_str) = iter.next() {
-                                    if first_str.starts_with(&format!(
-                                        "Program {} invoke",
-                                        self.config.program_address
-                                    )) {
-                                        // Program log: Instruction: ...
-                                        iter.next();
-                                        // Program data: k8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==
-                                        if let Some(third_str) = iter.next() {
-                                            if third_str.starts_with("Program data: ") {
-                                                if let Some(data) =
-                                                    third_str.split_whitespace().rev().next()
-                                                {
-                                                    return DiaryEvent::try_from_slice(
-                                                        &base64::decode(data).unwrap_or_default(),
-                                                    )
-                                                    .ok();
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                None
-                            })
+                    let name = events
+                        .iter()
+                        .find_map(|event| {
+                            DiaryEvent::try_from_slice(&base64::decode(event).unwrap_or_default())
+                                .ok()
                         })
                         .map(|DiaryEvent { name, .. }| name)
                         .unwrap_or(name);
@@ -183,39 +165,15 @@ impl DiaryIndexer {
                     let diary_pubkey = account_keys[accounts[1] as usize];
                     let record_pubkey = account_keys[accounts[2] as usize];
 
-                    let text = if let Some(text_from_event) = log
-                        .as_ref()
-                        .and_then(|logs| {
-                            logs.windows(3).find_map(|three_logs| {
-                                let mut iter = three_logs.iter();
-                                // Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x invoke [1]
-                                if let Some(first_str) = iter.next() {
-                                    if first_str.starts_with(&format!(
-                                        "Program {} invoke",
-                                        self.config.program_address
-                                    )) {
-                                        // Program log: Instruction: ...
-                                        iter.next();
-                                        // Program data: k8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==
-                                        if let Some(third_str) = iter.next() {
-                                            if third_str.starts_with("Program data: ") {
-                                                if let Some(data) =
-                                                    third_str.split_whitespace().rev().next()
-                                                {
-                                                    return RecordEvent::try_from_slice(
-                                                        &base64::decode(data).unwrap_or_default(),
-                                                    )
-                                                    .ok();
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                None
-                            })
+                    let text_from_event = events
+                        .iter()
+                        .find_map(|event| {
+                            RecordEvent::try_from_slice(&base64::decode(event).unwrap_or_default())
+                                .ok()
                         })
-                        .map(|RecordEvent { text }| text)
-                    {
+                        .map(|RecordEvent { text }| text);
+
+                    let text = if let Some(text_from_event) = text_from_event {
                         text_from_event
                     } else {
                         let record_account = self
@@ -271,10 +229,104 @@ impl DiaryIndexer {
     }
 }
 
+fn get_events_from_log(
+    logs: &mut (dyn Iterator<Item = String> + 'static),
+    program: &str,
+) -> Vec<String> {
+    let mut result = vec![];
+    get_events_raw(None, logs, program, &mut result);
+    result
+}
+
+fn get_events_raw(
+    current_program: Option<&str>,
+    logs: &mut (dyn Iterator<Item = String> + 'static),
+    program: &str,
+    result: &mut Vec<String>,
+) {
+    if let Some(current_program) = current_program {
+        if current_program != program {
+            while let Some(log) = logs.next() {
+                if log.starts_with(&format!("Program {} success", current_program))
+                    || log.starts_with(&format!("Program {} failed", current_program))
+                {
+                    return;
+                }
+            }
+        } else {
+            while let Some(log) = logs.next() {
+                if log.starts_with(&format!("Program {} success", program))
+                    || log.starts_with(&format!("Program {} failed", program))
+                {
+                    break;
+                }
+                let mut split = log.split_whitespace();
+                if let Some(f) = split.next() {
+                    if f == "Program" {
+                        if let Some(t) = split.next() {
+                            if t != "data:" && t != "log:" && t.len() == 43 {
+                                if let Some(tt) = split.next() {
+                                    if tt == "invoke" {
+                                        get_events_raw(Some(t), logs, program, result);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if log.starts_with("Program data: ") {
+                    if let Some(data) = log.split_whitespace().rev().next() {
+                        result.push(data.to_string())
+                    }
+                }
+            }
+        }
+    } else {
+        while let Some(log) = logs.next() {
+            if log.starts_with(&format!("Program {} invoke", program)) {
+                get_events_raw(Some(program), logs, program, result);
+            }
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 enum DiaryIndexerError {
     #[error("Account `{0}` not found")]
     AccountNotFound(String),
     #[error("Failed to decode solana transaction: `{0}`")]
     DecodeTransactionError(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_test() {
+        let log = vec![
+            "Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x invoke [1]".to_string(),
+            "Program log: Instruction: AddRecord".to_string(),
+            "Program log: Program".to_string(),
+            "Program data: k8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==".to_string(),
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]".to_string(),
+            "Program log: Instruction: Transfer".to_string(),
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4736 of 100973 compute units".to_string(),
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success".to_string(),
+            "Program data: A8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==".to_string(),
+            "Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x consumed 8120 of 200000 compute units".to_string(),
+            "Program bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x success".to_string(),
+            ];
+        let events = get_events_from_log(
+            &mut log.into_iter(),
+            "bNFMSsTXGZxhAA7mUcdUid5Yir3zWJf1myfP4TSQ46x",
+        );
+        assert_eq!(
+            events,
+            vec![
+                "k8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==".to_string(),
+                "A8iH+OXeD5YPAAAAAAAAAAAAAAAAAAAAMTIzBgAAAGZkc2Zkcw==".to_string()
+            ]
+        );
+    }
 }
